@@ -82,6 +82,24 @@ impl HexBoard {
         two_distance(&g, size * size, size, &mut out[..]);
     }
 
+    pub fn two_distance_sum(&self, player: Player) -> [usize; MAX_SIZE * MAX_SIZE] {
+        let mut d1 = [0; MAX_SIZE * MAX_SIZE];
+        let mut d2 = [0; MAX_SIZE * MAX_SIZE];
+        if player == Player::Red {
+            self.two_distance(TwoDistanceStart::LeftTop, &mut d1);
+            self.two_distance(TwoDistanceStart::RightBottom, &mut d2);
+        } else {
+            self.two_distance(TwoDistanceStart::LeftBottom, &mut d1);
+            self.two_distance(TwoDistanceStart::RightTop, &mut d2);
+        }
+
+        for i in 0..self.size * self.size {
+            d1[i] += d2[i];
+        }
+
+        d1
+    }
+
     pub fn get_reduced_graph(&self, start: TwoDistanceStart) -> Graph {
         let target_player = match start {
             TwoDistanceStart::LeftTop | TwoDistanceStart::RightBottom => Player::Red,

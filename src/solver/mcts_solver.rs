@@ -14,6 +14,8 @@ use crate::simulator::simulator::Simulator;
 use crate::solver::solver::Solver;
 use serde::Serialize;
 use crate::cutoff::pattern_cutoff::PatternCutoff;
+use crate::prior::pattern_prior::PatternPrior;
+use crate::prior::prior::Prior;
 
 #[derive(Serialize)]
 struct Node {
@@ -34,6 +36,7 @@ struct Node {
     pub depth: usize,
     pub is_game_over_calculated: bool,
     pub game_over: Option<Player>,
+    pub game_over_from_other_methods: Option<Player>,
     pub size: usize,
 
     // pub parent: Option<Rc<RefCell<Node>>>,
@@ -60,6 +63,7 @@ impl Node {
             depth: 0,
             is_game_over_calculated: false,
             game_over: None,
+            game_over_from_other_methods: None,
             size,
             parent: None,
             children: Vec::with_capacity(MAX_SIZE * MAX_SIZE),
@@ -85,7 +89,8 @@ impl Node {
             mov: position,
             depth: node.borrow().depth + 1,
             is_game_over_calculated: false,
-            game_over: None,
+            game_over: node.borrow().game_over.clone(),
+            game_over_from_other_methods: node.borrow().game_over_from_other_methods.clone(),
             size: node.borrow().size,
             // parent: Some(node.clone()),
             parent: Some(Rc::downgrade(&node)),
@@ -98,6 +103,9 @@ impl Node {
     }
 
     fn get_game_over(&mut self) -> Option<Player> {
+        if let Some(x) = self.game_over_from_other_methods {
+            return Some(x);
+        }
         if self.is_game_over_calculated {
             self.game_over.clone()
         } else {
@@ -127,10 +135,10 @@ impl Default for MCTSSolverConfig {
             min_sim: 5,
             max_sim: 10,
             simulation_amount: 500000,
-            times_per_sim: 10,
+            times_per_sim: 5,
             amaf_constant: 500.0,
             ucb_constant: 1.414,
-            pb_constant: 2.5,
+            pb_constant: 2.0,
             win_weight: 1.0
         }
     }
@@ -147,7 +155,8 @@ pub struct MCTSSolverHelper {
 
     // pub root: Rc<RefCell<Node>>,
     pub simulator: Box<dyn Simulator>,
-    pub cutoffs: Vec<Box<dyn Cutoff>>
+    pub cutoffs: Vec<Box<dyn Cutoff>>,
+    pub prior: Option<Box<dyn Prior>>,
 }
 
 impl MCTSSolverHelper {
@@ -277,7 +286,8 @@ impl MCTSSolverHelper {
         node.borrow().children[max_index].clone()
     }
 
-    fn expand(&mut self, node: Rc<RefCell<Node>>) {
+    /// return false: no children is available, meaning node is eventually a winning status
+    fn expand(&mut self, node: Rc<RefCell<Node>>) -> bool {
         let ss = self.size * self.size;
         let size = self.size;
 
@@ -315,11 +325,36 @@ impl MCTSSolverHelper {
             }
         }
 
+        self.calc_prior(node.clone());
+
         self.total_expansion += 1;
+
+        node.borrow().children.len() > 0
     }
 
     fn calc_prior(&self, node: Rc<RefCell<Node>>) {
-        
+        if self.prior.is_none() {
+            return;
+        }
+
+        let board = &node.borrow().board;
+        let size = board.size;
+        let mov = node.borrow().mov;
+        let last_move = if mov < usize::MAX {
+            Some((mov / size, mov % size))
+        } else {
+            None
+        };
+        let next_player = node.borrow().next_player;
+
+        let prior = self.prior.as_ref().unwrap();
+        let mut out = [0.0; MAX_SIZE * MAX_SIZE];
+        prior.prior(&board, last_move, next_player, &mut out[..]);
+
+        for child in node.borrow().children.iter() {
+            let mov = child.borrow().mov;
+            child.borrow_mut().prior = out[mov];
+        }
     }
 
     fn uct(&mut self, node: Rc<RefCell<Node>>) {
@@ -329,11 +364,17 @@ impl MCTSSolverHelper {
                 n = self.select(n.clone());
             }
 
-            if n.borrow().visit >= self.config.max_sim {
-                let is_game_over = n.borrow_mut().get_game_over().is_none();
-                if is_game_over {
-                    self.expand(n.clone());
-                    n = self.select(n.clone());
+            let visit = n.borrow().visit;
+            if visit >= self.config.max_sim {
+                let is_game_over = n.borrow_mut().get_game_over().is_some();
+                if !is_game_over {
+                    if !self.expand(n.clone()) {
+                        // cannot expand, the game is actually over
+                        let player = n.borrow().player;
+                        n.borrow_mut().game_over_from_other_methods = Some(player);
+                    } else {
+                        n = self.select(n.clone());
+                    }
                 }
             }
 
@@ -404,10 +445,12 @@ impl Solver for MCTSSolver {
             // root: root.clone(),
             simulator: Box::new(SaveBridgeSimulator),
             cutoffs: vec![
-                // Box::new(InferiorCellCutoff),
+                Box::new(InferiorCellCutoff),
                 Box::new(TwoDistanceCutoff { rank: 4 }),
                 Box::new(PatternCutoff)
             ],
+            // prior: Some(Box::new(PatternPrior))
+            prior: None
         };
         helper.uct(root.clone());
         println!("done");

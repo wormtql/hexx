@@ -8,3 +8,4 @@ pub mod inferior_cell;
 pub mod utils;
 pub mod two_distance;
 pub mod pattern;
+pub mod prior;
